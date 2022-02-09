@@ -1,0 +1,651 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: cloudformation templates for Nproducts CICD
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Environment Configuration"
+        Parameters:
+          - ACCName
+          - Environment
+          - BU
+          - Region
+      - Label:
+          default: "GitHub Configuration"
+        Parameters:
+          - GitHubToken
+          - GitHubUser
+          - GitHubRepo
+          - GitHubBranch
+      - Label:
+          default: "ArtifactStore Configuration"
+        Parameters:
+          - BucketName
+      - Label:
+          default: "ECR or Docker Hub Repository configuration"
+        Parameters:
+          - RepositoryURI
+      - Label:
+          default: "deployment configurations"
+        Parameters:
+          - CFStackName
+          - ApplicationURL
+          - EmailAddress1
+Parameters:
+  CFStackName:
+    Type: String
+    Default: ""
+  ACCName:
+     Type: String
+     Default: nHotels
+  Region:
+    Type: String
+    Default: virgnia
+  Environment:
+    Default: "dev"
+    Type: String
+    AllowedValues: 
+      - dev
+      - uat
+      - qa
+      - preprod
+      - stg
+      - prd
+    Description: This is used as environment where resources will be built 
+  BU:
+    Default: "US"
+    Type: String
+    Description: 'name of bussines unit.'
+  GitHubUser:
+    Type: String
+    Description: GitHub User
+    Default: "vinodarcot"
+  GitHubRepo:
+    Type: String
+    Description: GitHub Repo to pull from. Only the Name. not the URL
+    Default: "nproducts"
+  GitHubBranch:
+    Type: String
+    Description: GitHub Branch
+    Default: "dev"
+  GitHubToken:
+    NoEcho: true
+    Type: String
+    Default: '{{resolve:secretsmanager:github/nproducts/personal-access-token:SecretString:SecretToken}}'
+    Description: GitHub Token. Must be defined in AWS Secrets Manager and here https://github.com/settings/tokens
+  BucketName:
+    Type: String
+    Description: Enter Your BucketName
+  RepositoryURI:
+    Type: String
+    Description: enter your repository URI
+    Default: ""
+  EmailAddress1:
+    Type: String
+    Description: "Codepipeline Notifications"
+    Default: "vinodbhargav@ensarsolutions.com"
+  EmailAddress2:
+    Type: String
+    Description: "Codepipeline Notifications"
+    Default: "vinodbhargav@ensarsolutions.com"
+  EmailAddress3:
+    Type: String
+    Description: "Codepipeline Notifications"
+    Default: "vinodbhargav@ensarsolutions.com"
+  EmailAddress4:
+    Type: String
+    Description: "Codepipeline Notifications"
+    Default: "vinodbhargav@ensarsolutions.com"
+
+Mappings: {}
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+       BucketName: !Ref BucketName
+       VersioningConfiguration:
+           Status: Enabled
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+       Bucket: !Ref S3Bucket
+       PolicyDocument:
+          Statement:
+            - 
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Join ['',['arn:aws:s3:::',!Ref S3Bucket, '/*']]
+                - !Join ['',['arn:aws:s3:::',!Ref S3Bucket]] 
+              Principal:
+                AWS:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:root
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/${ACCName}-PipeLineRole-${Environment}-${Region}
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/${ACCName}-CodeBuildRole-${Environment}-${Region}
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/${ACCName}-CFDeployerRole-${Environment}-${Region}
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName:
+        Fn::Sub: ${ACCName}-CodeBuildRole-${Environment}-${Region}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub ${ACCName}-CodeBuildRole-${Environment}-${Region}
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+  CodeBuildPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ACCName}-CodeBuildPolicy-${Environment}-${Region}
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Action:
+               - kms:Decrypt
+            Resource: !GetAtt KMSKey.Arn
+          -
+            Effect: Allow
+            Action:
+               - 'secretsmanager:GetSecretValue'
+            Resource:
+              - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*'
+          -
+            Effect: Allow
+            Action:
+              - codecommit:*
+              - ecr:*
+            Resource: "*"
+          - 
+            Effect: Allow
+            Action:
+               - codebuild:CreateReportGroup
+               - codebuild:CreateReport
+               - codebuild:UpdateReport
+               - codebuild:BatchPutTestCases
+               - codebuild:BatchPutCodeCoverages
+            Resource:
+               - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/*'
+          -
+            Effect: Allow
+            Action:
+              - codecommit:GitPull
+            Resource:
+               - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:*'
+          - 
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+               - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+               - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+             - !Join ['',['arn:aws:s3:::',!Ref S3Bucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Ref S3Bucket]]
+      Roles:
+        -
+          !Ref CodeBuildRole
+        
+  PipeLineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ACCName}-PipeLineRole-${Environment}-${Region}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub ${ACCName}-PipeLineRole-${Environment}-${Region}
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+  PipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ACCName}-PipelinePolicy-${Environment}-${Region}
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !GetAtt KMSKey.Arn
+          -
+            Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - cloudFormation:List*
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - elasticbeanstalk:*
+              - codedeploy:*
+              - iam:PassRole
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - cloudformation:*
+              - s3:*
+              - ec2:*
+              - sns:*
+            Resource:
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+             - !Join ['',['arn:aws:s3:::',!Ref S3Bucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Ref S3Bucket]]
+
+      Roles:
+        -
+          !Ref PipeLineRole
+  CFDeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ACCName}-CFDeployerRole-${Environment}-${Region}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub ${ACCName}-CFDeployerRole-${Environment}-${Region}
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+  CFDeployerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ACCName}-CFDeployerPolicy-${Environment}-${Region}
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !GetAtt KMSKey.Arn
+          -
+            Effect: Allow
+            Action:
+              - ecs:*
+              - events:* 
+              - iam:CreateRole
+              - iam:CreatePolicy
+              - iam:GetRole
+              - iam:DeleteRole
+              - iam:PutRolePolicy
+              - iam:PassRole
+              - iam:DeleteRolePolicy
+              - cloudformation:*
+              - ec2:*
+              - autoscaling:*
+              - application-autoscaling:*
+              - elasticloadbalancing:*
+              - sns:*
+              - cloudwatch:*
+              - logs:*
+              - ecr:*
+            Resource: "*"
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+             #- !Sub arn:aws:s3:::${S3Bucket}/*
+             #- !Sub arn:aws:s3:::${S3Bucket}
+             - !Join ['',['arn:aws:s3:::',!Ref S3Bucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Ref S3Bucket]]
+      Roles:
+        -
+          !Ref CFDeployerRole
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Used by Assumed Roles in Dev/Test/Prod accounts to Encrypt/Decrypt code
+      EnableKeyRotation: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ACCName}-KMS-${Environment}-${Region}'
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Sub '${ACCName}-KMSPolicy-${Environment}-${Region}'
+        Statement:
+         - 
+           Sid: Allows admin of the key
+           Effect: Allow
+           Principal:
+             AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+           Action:
+             - "kms:Create*"
+             - "kms:Describe*"
+             - "kms:Enable*"
+             - "kms:List*"
+             - "kms:Put*"
+             - "kms:Update*"
+             - "kms:Revoke*"
+             - "kms:Disable*"
+             - "kms:Get*"
+             - "kms:Delete*"
+             - "kms:ScheduleKeyDeletion"
+             - "kms:CancelKeyDeletion"
+             - "kms:TagResource"
+             - "kms:UntagResource"
+           Resource: "*"
+         - 
+           Effect: Allow
+           Principal:
+             AWS:
+               - !Sub arn:aws:iam::${AWS::AccountId}:root
+           Action:
+             - "kms:Encrypt"
+             - "kms:Decrypt"
+             - "kms:ReEncrypt*"
+             - "kms:GenerateDataKey*"
+             - "kms:DescribeKey"
+           Resource: "*"
+         - 
+           Effect: Allow
+           Principal: '*'
+           Action:
+             - "kms:Encrypt"
+             - "kms:Decrypt"
+             - "kms:ReEncrypt*"
+             - "kms:GenerateDataKey*"
+             - "kms:DescribeKey"
+           Resource: "*"
+  KMSAlias:
+     Type: AWS::KMS::Alias
+     Properties:
+       AliasName: !Sub 'alias/${ACCName}-KMS-${Environment}-${Region}'
+       TargetKeyId: !Ref KMSKey
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ACCName}-CodeBuild-${Environment}-${Region}
+      EncryptionKey: !GetAtt KMSKey.Arn
+      ServiceRole: !Ref CodeBuildRole
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+            - Name: AWS_DEFAULT_REGION
+              Type: PLAINTEXT
+              Value: !Ref AWS::Region
+            - Name: IMAGE_REPO_NAME
+              Type: PLAINTEXT
+              Value: !Ref RepositoryURI
+            - Name: AWS_ACCOUNT_ID
+              Value: !Ref AWS::AccountId
+      Source:
+        BuildSpec: |
+           version: 0.2
+           phases:
+             pre_build:
+               commands:
+                  - echo Logging in to Amazon ECR...
+                  - aws --version
+                  - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+                  - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+                  - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+             build:
+               commands:
+                  - echo Build started on `date`
+                  - echo Building the Docker image...
+                  - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+                  - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $REPOSITORY_URI:$IMAGE_TAG   
+                  
+                 
+             post_build:
+               commands:
+                  - echo Build completed on `date`
+                  - echo Pushing the Docker images...
+                  - docker push $REPOSITORY_URI:$IMAGE_TAG
+                  - echo Writing image definitions file...
+                  - printf '{"Parameters":{"ImageUrl":"%s"}}' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+                  - cat imagedefinitions.json
+           artifacts:
+              files: 
+                 - imagedefinitions.json
+                 - api-service.yaml
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 60
+      Tags:
+        - Key: Name
+          Value: !Sub ${ACCName}-CodeBuild-${Environment}-${Region}
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+  Webhook: 
+    Type: 'AWS::CodePipeline::Webhook' 
+    Properties:
+     AuthenticationConfiguration: 
+        SecretToken: !Ref GitHubToken
+     Filters: 
+        - JsonPath: "$.ref" 
+          MatchEquals: refs/heads/{Branch} 
+     Authentication: GITHUB_HMAC 
+     TargetPipeline: !Ref CodePipeline
+     TargetAction: SourceCode 
+     Name: !Sub '${ACCName}-WebHook-${Environment}-${Region}'
+     TargetPipelineVersion: !GetAtt CodePipeline.Version
+     RegisterWithThirdParty: 'true'
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${ACCName}-CodePipeline-${Environment}-${Region}
+      RoleArn: !GetAtt PipeLineRole.Arn
+      Stages:
+      - Name: DownloadSource
+        Actions:
+        - Name: SourceCode
+          ActionTypeId:
+            Category: Source
+            Owner: ThirdParty
+            Version: 1
+            Provider: GitHub
+          OutputArtifacts:
+          - Name: Sources
+          Configuration:
+            Owner: !Ref GitHubUser
+            Repo: !Ref GitHubRepo
+            Branch: !Ref GitHubBranch
+            OAuthToken: !Ref GitHubToken
+            PollForSourceChanges: false
+          RunOrder: 1
+      - Name: Build
+        Actions:
+        - Name: CodeBuild
+          InputArtifacts:
+          - Name: Sources
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Version: 1
+            Provider: CodeBuild
+          OutputArtifacts:
+          - Name: CFNTemplateArtifact
+          Configuration:
+            ProjectName:
+              Ref: CodeBuildProject
+          RunOrder: 1
+      - Name: Deploy
+        Actions:
+        - Name: createchangeset
+          InputArtifacts:
+          - Name: CFNTemplateArtifact
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Version: 1
+            Provider: CloudFormation
+          OutputArtifacts:
+          - Name: CreatedCFNStack
+          Configuration:
+            ActionMode: CHANGE_SET_REPLACE
+            ChangeSetName: ExecuteChangeSet
+            RoleArn: !GetAtt CFDeployerRole.Arn
+            Capabilities: CAPABILITY_NAMED_IAM
+            StackName: !Ref CFStackName
+            TemplatePath: CFNTemplateArtifact::api-service.yaml
+            TemplateConfiguration: CFNTemplateArtifact::imagedefinitions.json
+            OutputFileName: output.json
+          RunOrder: 1
+        - Name: cloudformation
+          InputArtifacts:
+          - Name: CreatedCFNStack
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Version: 1
+            Provider: CloudFormation
+          Configuration:
+            ActionMode: CHANGE_SET_EXECUTE
+            ChangeSetName: ExecuteChangeSet
+            StackName: !Ref CFStackName
+          RunOrder: 3
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: S3Bucket
+        EncryptionKey: 
+            Id: !GetAtt KMSKey.Arn
+            Type: KMS
+      Tags:
+        - Key: Name
+          Value: !Sub ${ACCName}-CodePipeline-${Environment}-${Region}
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+
+  CodePipelineNotificationRule: 
+    Type: 'AWS::CodeStarNotifications::NotificationRule'
+    Properties:
+        Name: !Sub '${ACCName}-NotifcationRule-${Environment}-${Region}'
+        DetailType: FULL
+        Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ACCName}-CodePipeline-${Environment}-${Region}'
+        EventTypeIds: 
+            - codepipeline-pipeline-pipeline-execution-succeeded
+            - codepipeline-pipeline-pipeline-execution-started
+            - codepipeline-pipeline-pipeline-execution-failed
+            - codepipeline-pipeline-pipeline-execution-canceled
+        Targets: 
+            - TargetType: SNS 
+              TargetAddress: !Ref 'OperationsSNSTopic'
+        Tags: 
+             Name: !Sub '${ACCName}-NotifcationRule-${Environment}-${Region}'
+  OperationsSNSTopic:   
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub ${ACCName}-${Environment}-Deployment-Alerts-${BU}-${Region}
+      TopicName: !Sub ${ACCName}-${Environment}-Deployment-Alerts-${BU}-${Region}
+      KmsMasterKeyId: !GetAtt KMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub ${ACCName}-${Environment}-Deployment-Alerts-${BU}-${Region}
+        - Key: Environment
+          Value: !Ref 'Environment'
+        - Key: BU
+          Value: !Ref BU
+      Subscription:
+        -
+          Endpoint: !Ref 'EmailAddress1'
+          Protocol: email
+        -
+          Endpoint: !Ref 'EmailAddress2'
+          Protocol: email
+        -
+          Endpoint: !Ref 'EmailAddress3'
+          Protocol: email
+        -
+          Endpoint: !Ref 'EmailAddress4'
+          Protocol: email
+  TopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      PolicyDocument:
+        Id: Id1
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Sid1
+          Effect: Allow
+          Principal:
+            Service:
+            - 'codestar-notifications.amazonaws.com'
+          Action: 'sns:Publish'
+          Resource: !Ref 'OperationsSNSTopic'
+      Topics:
+      - !Ref OperationsSNSTopic  
+
+Outputs:
+  S3BucketName:
+    Description: Name of the S3 Bucket
+    Value: !Ref S3Bucket
